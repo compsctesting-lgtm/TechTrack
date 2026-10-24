@@ -18,9 +18,36 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+private slots:
+    void on_addEquipmentButton_clicked();
+
+    void on_clearEquipmentButton_clicked();
+
+    void on_equipmentTableWidget_cellClicked(int row, int column);
+
+    void on_updateEquipmentButton_clicked();
+
+    void on_searchEquipmentButton_clicked();
+
+    void on_showAllEquipmentButton_clicked();
+
+    void on_addBorrowerButton_clicked();
+
+    void on_clearBorrowerButton_clicked();
+
+    void on_borrowerTableWidget_cellClicked(int row, int column);
+
+    void on_updateBorrowerButton_clicked();
+
+    void on_showAllBorrowersButton_clicked();
+
+    void on_searchBorrowerButton_clicked();
+
 private:
     Ui::MainWindow *ui;
     bool setupDatabase();
+    void loadEquipment();
+    void loadBorrowers();
     QSqlDatabase database;
 };
 #endif // MAINWINDOW_H
