@@ -8,6 +8,7 @@
 #include <QStringList>
 #include <QTableWidgetItem>
 #include <QHeaderView>
+#include <QDate>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -27,10 +28,18 @@ MainWindow::MainWindow(QWidget *parent)
         ->horizontalHeader()
         ->setSectionResizeMode(QHeaderView::Stretch);
 
+    ui->checkoutDateEdit
+        ->setDate(QDate::currentDate());
+
+    ui->dueDateEdit
+        ->setDate(QDate::currentDate().addDays(7));
+
     if (setupDatabase()) {
         statusBar()->showMessage("Database connected successfully.");
         loadEquipment();
         loadBorrowers();
+        loadCheckoutOptions();
+        loadRecords();
     }
 }
 
@@ -146,6 +155,159 @@ bool MainWindow::setupDatabase()
     return true;
 }
 
+void MainWindow::loadRecords()
+{
+    ui->recordsTableWidget->setRowCount(0);
+
+    QString filter =
+        ui->recordFilterComboBox->currentText();
+
+    QString command =
+        "SELECT c.checkout_id, "
+        "e.serial_number, "
+        "e.name, "
+        "b.name, "
+        "c.checkout_date, "
+        "c.due_date, "
+        "COALESCE(c.return_date, ''), "
+        "CASE "
+        "WHEN c.status = 'Checked Out' "
+        "AND date(c.due_date) < date('now') "
+        "THEN 'Overdue' "
+        "ELSE c.status "
+        "END AS display_status "
+        "FROM Checkouts c "
+        "JOIN Equipment e "
+        "ON c.equipment_id = e.equipment_id "
+        "JOIN Borrowers b "
+        "ON c.borrower_id = b.borrower_id ";
+
+    if (filter.contains("Overdue", Qt::CaseInsensitive)) {
+        command +=
+            "WHERE c.status = 'Checked Out' "
+            "AND date(c.due_date) < date('now') ";
+    }
+    else if (
+        filter.contains("Checked", Qt::CaseInsensitive) ||
+        filter.contains("Active", Qt::CaseInsensitive)
+        ) {
+        command +=
+            "WHERE c.status = 'Checked Out' ";
+    }
+    else if (
+        filter.contains("Returned", Qt::CaseInsensitive)
+        ) {
+        command +=
+            "WHERE c.status = 'Returned' ";
+    }
+
+    command += "ORDER BY c.checkout_id DESC";
+
+    QSqlQuery query(database);
+
+    if (!query.exec(command)) {
+        QMessageBox::critical(
+            this,
+            "Records Error",
+            "The checkout records could not be loaded:\n" +
+                query.lastError().text()
+            );
+        return;
+    }
+
+    while (query.next()) {
+        int row = ui->recordsTableWidget->rowCount();
+        ui->recordsTableWidget->insertRow(row);
+
+        for (int column = 0; column < 8; column++) {
+            ui->recordsTableWidget->setItem(
+                row,
+                column,
+                new QTableWidgetItem(
+                    query.value(column).toString()
+                    )
+                );
+        }
+    }
+}
+
+void MainWindow::loadCheckoutOptions()
+{
+    ui->checkoutEquipmentComboBox->clear();
+    ui->checkoutBorrowerComboBox->clear();
+    ui->activeCheckoutComboBox->clear();
+
+    QSqlQuery equipmentQuery(database);
+
+    equipmentQuery.prepare(
+        "SELECT equipment_id, serial_number, name "
+        "FROM Equipment "
+        "WHERE status = 'Available' "
+        "ORDER BY name"
+        );
+
+    if (equipmentQuery.exec()) {
+        while (equipmentQuery.next()) {
+            QString displayText =
+                equipmentQuery.value(1).toString() +
+                " - " +
+                equipmentQuery.value(2).toString();
+
+            ui->checkoutEquipmentComboBox->addItem(
+                displayText,
+                equipmentQuery.value(0)
+                );
+        }
+    }
+
+    QSqlQuery borrowerQuery(database);
+
+    borrowerQuery.prepare(
+        "SELECT borrower_id, name "
+        "FROM Borrowers "
+        "ORDER BY name"
+        );
+
+    if (borrowerQuery.exec()) {
+        while (borrowerQuery.next()) {
+            ui->checkoutBorrowerComboBox->addItem(
+                borrowerQuery.value(1).toString(),
+                borrowerQuery.value(0)
+                );
+        }
+    }
+
+    QSqlQuery checkoutQuery(database);
+
+    checkoutQuery.prepare(
+        "SELECT c.checkout_id, e.serial_number, "
+        "e.name, b.name "
+        "FROM Checkouts c "
+        "JOIN Equipment e "
+        "ON c.equipment_id = e.equipment_id "
+        "JOIN Borrowers b "
+        "ON c.borrower_id = b.borrower_id "
+        "WHERE c.status = 'Checked Out' "
+        "ORDER BY c.due_date"
+        );
+
+    if (checkoutQuery.exec()) {
+        while (checkoutQuery.next()) {
+            QString displayText =
+                checkoutQuery.value(1).toString() +
+                " - " +
+                checkoutQuery.value(2).toString() +
+                " | " +
+                checkoutQuery.value(3).toString();
+
+            ui->activeCheckoutComboBox->addItem(
+                displayText,
+                checkoutQuery.value(0)
+                );
+        }
+    }
+}
+
 void MainWindow::loadBorrowers()
 {
     ui->borrowerTableWidget->setRowCount(0);
@@ -189,10 +351,21 @@ void MainWindow::loadEquipment()
     QSqlQuery query(database);
 
     if (!query.exec(
-            "SELECT equipment_id, serial_number, name, category, "
-            "condition, status "
-            "FROM Equipment "
-            "ORDER BY equipment_id"
+            "SELECT e.equipment_id, e.serial_number, e.name, "
+            "e.category, e.condition, "
+            "CASE "
+            "WHEN e.status = 'Checked Out' "
+            "AND EXISTS ("
+            "SELECT 1 FROM Checkouts c "
+            "WHERE c.equipment_id = e.equipment_id "
+            "AND c.status = 'Checked Out' "
+            "AND date(c.due_date) < date('now')"
+            ") "
+            "THEN 'Overdue' "
+            "ELSE e.status "
+            "END AS display_status "
+            "FROM Equipment e "
+            "ORDER BY e.equipment_id"
             )) {
         QMessageBox::critical(
             this,
@@ -674,3 +847,249 @@ void MainWindow::on_searchBorrowerButton_clicked()
         }
     }
 }
+
+void MainWindow::on_checkoutEquipmentButton_clicked()
+{
+    if (ui->checkoutEquipmentComboBox->count() == 0) {
+        QMessageBox::warning(
+            this,
+            "No Equipment Available",
+            "There is no available equipment to check out."
+            );
+        return;
+    }
+
+    if (ui->checkoutBorrowerComboBox->count() == 0) {
+        QMessageBox::warning(
+            this,
+            "No Borrowers",
+            "Please add a borrower before checking out equipment."
+            );
+        return;
+    }
+
+    QDate checkoutDate = ui->checkoutDateEdit->date();
+    QDate dueDate = ui->dueDateEdit->date();
+
+    if (dueDate < checkoutDate) {
+        QMessageBox::warning(
+            this,
+            "Invalid Due Date",
+            "The due date cannot be before the checkout date."
+            );
+        return;
+    }
+
+    int equipmentId =
+        ui->checkoutEquipmentComboBox->currentData().toInt();
+    int borrowerId =
+        ui->checkoutBorrowerComboBox->currentData().toInt();
+
+    database.transaction();
+
+    QSqlQuery checkoutQuery(database);
+
+    checkoutQuery.prepare(
+        "INSERT INTO Checkouts "
+        "(equipment_id, borrower_id, checkout_date, "
+        "due_date, status) "
+        "VALUES (:equipmentId, :borrowerId, "
+        ":checkoutDate, :dueDate, 'Checked Out')"
+        );
+
+    checkoutQuery.bindValue(":equipmentId", equipmentId);
+    checkoutQuery.bindValue(":borrowerId", borrowerId);
+    checkoutQuery.bindValue(
+        ":checkoutDate",
+        checkoutDate.toString(Qt::ISODate)
+        );
+    checkoutQuery.bindValue(
+        ":dueDate",
+        dueDate.toString(Qt::ISODate)
+        );
+
+    if (!checkoutQuery.exec()) {
+        database.rollback();
+
+        QMessageBox::critical(
+            this,
+            "Checkout Error",
+            "The checkout record could not be created:\n" +
+                checkoutQuery.lastError().text()
+            );
+        return;
+    }
+
+    QSqlQuery equipmentQuery(database);
+
+    equipmentQuery.prepare(
+        "UPDATE Equipment "
+        "SET status = 'Checked Out' "
+        "WHERE equipment_id = :equipmentId "
+        "AND status = 'Available'"
+        );
+
+    equipmentQuery.bindValue(":equipmentId", equipmentId);
+
+    if (!equipmentQuery.exec() ||
+        equipmentQuery.numRowsAffected() != 1) {
+        database.rollback();
+
+        QMessageBox::critical(
+            this,
+            "Checkout Error",
+            "The equipment is no longer available."
+            );
+        return;
+    }
+
+    if (!database.commit()) {
+        database.rollback();
+
+        QMessageBox::critical(
+            this,
+            "Checkout Error",
+            "The checkout could not be saved."
+            );
+        return;
+    }
+
+    ui->transactionStatusLabel->setText(
+        "Equipment checked out successfully."
+        );
+
+    QMessageBox::information(
+        this,
+        "Checkout Complete",
+        "The equipment was checked out successfully."
+        );
+
+    loadEquipment();
+    loadCheckoutOptions();
+    loadRecords();
+}
+
+void MainWindow::on_returnEquipmentButton_clicked()
+{
+    if (ui->activeCheckoutComboBox->count() == 0) {
+        QMessageBox::warning(
+            this,
+            "No Active Checkouts",
+            "There is no checked-out equipment to return."
+            );
+        return;
+    }
+
+    int checkoutId =
+        ui->activeCheckoutComboBox->currentData().toInt();
+
+    QSqlQuery findQuery(database);
+
+    findQuery.prepare(
+        "SELECT equipment_id "
+        "FROM Checkouts "
+        "WHERE checkout_id = :checkoutId "
+        "AND status = 'Checked Out'"
+        );
+
+    findQuery.bindValue(":checkoutId", checkoutId);
+
+    if (!findQuery.exec() || !findQuery.next()) {
+        QMessageBox::critical(
+            this,
+            "Return Error",
+            "The active checkout record could not be found."
+            );
+        return;
+    }
+
+    int equipmentId = findQuery.value(0).toInt();
+
+    database.transaction();
+
+    QSqlQuery checkoutQuery(database);
+
+    checkoutQuery.prepare(
+        "UPDATE Checkouts "
+        "SET return_date = :returnDate, "
+        "status = 'Returned' "
+        "WHERE checkout_id = :checkoutId "
+        "AND status = 'Checked Out'"
+        );
+
+    checkoutQuery.bindValue(
+        ":returnDate",
+        QDate::currentDate().toString(Qt::ISODate)
+        );
+    checkoutQuery.bindValue(":checkoutId", checkoutId);
+
+    if (!checkoutQuery.exec() ||
+        checkoutQuery.numRowsAffected() != 1) {
+        database.rollback();
+
+        QMessageBox::critical(
+            this,
+            "Return Error",
+            "The checkout record could not be updated."
+            );
+        return;
+    }
+
+    QSqlQuery equipmentQuery(database);
+
+    equipmentQuery.prepare(
+        "UPDATE Equipment "
+        "SET status = 'Available' "
+        "WHERE equipment_id = :equipmentId"
+        );
+
+    equipmentQuery.bindValue(":equipmentId", equipmentId);
+
+    if (!equipmentQuery.exec()) {
+        database.rollback();
+
+        QMessageBox::critical(
+            this,
+            "Return Error",
+            "The equipment status could not be updated."
+            );
+        return;
+    }
+
+    if (!database.commit()) {
+        database.rollback();
+
+        QMessageBox::critical(
+            this,
+            "Return Error",
+            "The return could not be saved."
+            );
+        return;
+    }
+
+    ui->transactionStatusLabel->setText(
+        "Equipment returned successfully."
+        );
+
+    QMessageBox::information(
+        this,
+        "Return Complete",
+        "The equipment was returned successfully."
+        );
+
+    loadEquipment();
+    loadCheckoutOptions();
+    loadRecords();
+}
+
+void MainWindow::on_applyRecordFilterButton_clicked()
+{
+    loadRecords();
+}
+
+void MainWindow::on_refreshRecordsButton_clicked()
+{
+    ui->recordFilterComboBox->setCurrentIndex(0);
+    loadRecords();
+}
+

@@ -43,11 +43,21 @@ private slots:
 
     void on_searchBorrowerButton_clicked();
 
+    void on_checkoutEquipmentButton_clicked();
+
+    void on_returnEquipmentButton_clicked();
+
+    void on_applyRecordFilterButton_clicked();
+
+    void on_refreshRecordsButton_clicked();
+
 private:
     Ui::MainWindow *ui;
     bool setupDatabase();
     void loadEquipment();
     void loadBorrowers();
+    void loadCheckoutOptions();
+    void loadRecords();
     QSqlDatabase database;
 };
 #endif // MAINWINDOW_H
